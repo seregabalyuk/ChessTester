@@ -12,3 +12,7 @@ char* get_start_position() {
     out[9 * 8] = '\0';
     return out;
 }
+
+int check_move(const char* move, int is_white) {
+    return 0;
+}
