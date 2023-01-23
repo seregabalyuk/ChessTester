@@ -14,6 +14,9 @@ struct Program {
 struct Data {
     struct TableFD table;
     struct Program programs[num_progs];
+    long timers[num_progs];
+    int result;
+    size_t moves;
 };
 
 int preparation(struct Data* data, int argc, char *argv[]) {
@@ -36,6 +39,11 @@ int preparation(struct Data* data, int argc, char *argv[]) {
             return -1;
         }
     }
+    for(size_t id = 0; id < num_progs; ++ id) {
+        data->timers[id] = 0;
+    }
+    data->moves = 0;
+    data->result = 3;
     return 0;
 }
 
@@ -59,74 +67,93 @@ int write_start_position(struct Data* data) {
     return 0;
 }
 
+void make_one_move(struct Data* data, size_t move_num) {
+    char buffer[SIZE_BUFFER];
+    struct Program* prog = &data->programs[move_num % num_progs];
+    printf("move: %zu\n", move_num + 1);
+    if(move_num % num_progs == 0) {
+        printf("white: ");
+    } else {
+        printf("black: ");
+    }
+    fsync(prog->dialog.read);
+    ssize_t length = read(prog->dialog.read, buffer, SIZE_BUFFER);
+    if(length <= 0) {
+        printf("\n");
+        exit(5);
+    }
+    buffer[length] = '\0';
+    printf("%s", buffer);
+    int check = check_move(buffer, move_num % num_progs == 0);
+    if(check == 0) {
+        struct Program* other_prog = &data->programs[(move_num + 1) % num_progs];
+        fsync(other_prog->dialog.write);
+        write(other_prog->dialog.write, buffer, length);
+        exit(0);
+    }
+    exit(check);
+}
+
 int time_limit = 1 * CLOCKS_PER_SEC;
 
 int make_moves(struct Data* data) {
-    char buffer[SIZE_BUFFER];
     size_t move_num = 0;
-    long timers[num_progs];
-    for(size_t id = 0; id < num_progs; ++ id) {
-        timers[id] = 0;
-    }
-    while(move_num <= 120) {
-        for(size_t id = 0; id < num_progs; ++ id) {
-            struct Program* prog = &data->programs[id];
-            clock_t start = clock();
-            pid_t pid = fork();
-            if(pid == 0) {
-                printf("move: %zu\n", ++ move_num);
-                if(id == 0) {
-                    printf("white: ");
-                } else {
-                    printf("black: ");
-                }
-
-                fsync(prog->dialog.read);
-                ssize_t length = read(prog->dialog.read, buffer, SIZE_BUFFER);
-                if(length <= 0) {
-                    printf("\n");
-                    close_table(&data->table);
-                    exit(1);
-                }
-                printf("%.*s", (int)length, buffer);
-
-                for(size_t other_id = 0; other_id < num_progs; ++ other_id) {
-                    if(id != other_id) {
-                        struct Program* other_prog = &data->programs[id];
-                        fsync(other_prog->dialog.write);
-                        write(other_prog->dialog.write, buffer, length);
-                    }
-                }
-                close_table(&data->table);
-                exit(0);
-            }
-            int wstatus;
-            while(waitpid(pid, &wstatus, WNOHANG) == 0) {
-                if(clock() - start > time_limit) {
-                    kill(pid, SIGKILL);
-                    break;
-                }
-            }
-            long time = clock() - start;
-            timers[id] += time;
-            printf("time: %fsec\n\n", (float)time / CLOCKS_PER_SEC);
-            if(time > time_limit || WEXITSTATUS(wstatus) == 1) {
-                goto stop;
+    for(;move_num < 120; ++ move_num) {
+        clock_t start = clock();
+        pid_t pid = fork();
+        if(pid == 0) {
+            make_one_move(data, move_num);
+        }
+        int wstatus;
+        while(waitpid(pid, &wstatus, WNOHANG) == 0) {
+            if(clock() - start > time_limit) {
+                kill(pid, SIGKILL);
+                printf("\n");
+                break;
             }
         }
+        long time = clock() - start;
+        data->timers[move_num % num_progs] += time;
+        printf("time: %fsec\n\n", (float)time / CLOCKS_PER_SEC);
+
+        // некоректное поведение программы
+        if(time > time_limit || WEXITSTATUS(wstatus) == 4 || WEXITSTATUS(wstatus) == 5) {
+            data->result = 1 << ((move_num + 1) % num_progs);
+            break;
+        }
+
+        // при оканчании легальным способом
+        if(WEXITSTATUS(wstatus) != 0) {
+            data->result = WEXITSTATUS(wstatus);
+            ++ move_num;
+            break;
+        }
     }
-stop:
-    printf("stats\n");
-    printf("winner: \n");
-    printf("number moves: %zu\n", move_num);
-    printf("white time: %fsec\n", (float)timers[0] / CLOCKS_PER_SEC);
-    printf("black time: %fsec\n", (float)timers[1] / CLOCKS_PER_SEC);
+    data->moves = move_num;
     return 0;
+}
+
+void draw_result(struct Data* data) {
+    printf("status: ");
+    switch(data->result) {
+    case 1:
+        printf("white win\n");
+        break;
+    case 2:
+        printf("black win\n");
+        break;
+    default:
+        printf("draw\n");
+    }
+    printf("make moves: %zu\n", data->moves);
+    printf("white time: %fsec\n", (double) data->timers[0] / CLOCKS_PER_SEC);
+    printf("black time: %fsec\n", (double) data->timers[1] / CLOCKS_PER_SEC);
 }
 
 int testing(struct Data* data) {
     write_start_position(data);
     make_moves(data);
+    draw_result(data);
     return 0;
 }
 
