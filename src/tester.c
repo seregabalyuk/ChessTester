@@ -1,9 +1,9 @@
 
 #include "tester.h"
+
 #define num_progs 2
-//const size_t num_progs = 2;
+
 const size_t SIZE_BUFFER = 4096;
-const char default_log_name[] = "log.txt";
 
 struct Program {
     const char* name;
